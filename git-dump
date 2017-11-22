@@ -1,0 +1,154 @@
+#!/bin/bash
+
+function error {
+    echo "error: $1"
+    help "error"
+    exit 1
+}
+
+function help {
+    if [[ "$1" == "" ]]
+    then
+        echo "Dump topic branches to dump-format to be imported by 'git undump'."
+        echo ""
+    fi
+    echo "usage: git dump [-h] [--branch <ref>] --patch <ref>"
+    echo "                [--output-file [<filename>]]"
+    echo ""
+    echo "Options:"
+    echo "    -h                 show help and exit"
+    echo "    -b, --branch       merge base branch reference, current  branch"
+    echo "                       if not given"
+    echo "    -p, --patch        branch to create dump from, creates patch set"
+    echo "                       starting from merge base branch reference"
+    echo "    -o, --output-file  <stdout> if not given, to default filename if"
+    echo "                       no filename given"
+}
+
+function CheckNotSet # (NAME, VALUE)
+{
+    NAME=$1
+    VALUE=$2
+    if [[ "$VALUE" != "" ]]
+    then
+        error "$NAME has already been set"
+    fi
+}
+
+function CheckSet # (NAME, VALUE)
+{
+    NAME=$1
+    VALUE=$2
+    if [[ "$VALUE" == "" ]]
+    then
+        error "$NAME has not been set"
+    fi
+}
+
+function UrlEncode() {
+    old_lc_collate=$LC_COLLATE
+    LC_COLLATE=C
+
+    local length="${#1}"
+    for (( i = 0; i < length; i++ )); do
+        local c="${1:i:1}"
+        case $c in
+            [a-zA-Z0-9.~_-]) printf "$c" ;;
+            *) printf '%%%02X' "'$c" ;;
+        esac
+    done
+
+    LC_COLLATE=$old_lc_collate
+}
+
+MASTER=""
+PATCH=""
+FILENAME=""
+
+while (( "$#" )); do
+    case "$1" in
+        -h)
+            help
+            exit 0
+            ;;
+        -b|--branch)
+            CheckNotSet "parent branch" $MASTER;
+            case "$2" in
+                -*|--*)
+                    error "malformed branch object '$2'"
+                    ;;
+                *)
+                    MASTER=$2
+                    shift 2
+                    ;;
+            esac
+            ;;
+        -p|--patch)
+            CheckNotSet "patch branch" $PATCH;
+            case "$2" in
+                -*|--*)
+                    error "malformed branch object '$2'"
+                    ;;
+                *)
+                    PATCH=$2
+                    shift 2
+                    ;;
+            esac
+            ;;
+        -o|--output-file)
+            CheckNotSet "file name" $FILENAME;
+            case "$2" in
+                -*|--|"")
+                    FILENAME="#"
+                    shift;
+                    ;;
+                *) FILENAME=$2
+                   shift 2
+                   ;;
+            esac;
+            ;;
+        *)
+            error "unknown switch '$1'"
+            ;;
+    esac
+done
+
+CheckSet "patch branch" $PATCH
+
+if [[ $MASTER == "" ]]
+then
+    MASTER=$(git rev-parse --abbrev-ref HEAD)
+fi
+
+if [[ $FILENAME == "#" ]]
+then
+    FILENAME="$PATCH.dump"
+fi
+
+FILENAME=$(UrlEncode $FILENAME)
+
+BASE=$(git merge-base "$MASTER" "$PATCH")
+SHA=$(git rev-parse "$PATCH")
+
+if [[ $BASE == $SHA ]]
+then
+    echo "No merge base found, bailing out."
+    exit 0
+fi
+
+OUT=$(git format-patch --stdout $BASE..$PATCH)
+
+if [ -e "$FILENAME" ]
+then
+    echo "A file named '$FILENAME' already exists, bailing out."
+    exit 0
+elif [[ "$FILENAME" == "" ]]
+then
+    echo "$PATCH"
+    echo "$BASE"
+    echo "$OUT"
+else
+    echo "$PATCH" > "$FILENAME"
+    echo "$BASE" >> "$FILENAME"
+    echo "$OUT" >> "$FILENAME"
+fi
