@@ -1,0 +1,142 @@
+#!/bin/bash
+
+function error {
+    echo "error: $1"
+    help "error"
+    exit 1
+}
+
+function help {
+    if [[ "$1" == "" ]]
+    then
+        echo "Un-dump topic branches in dump-format exported by 'git dump'. Note"
+        echo "that the the revision from which the dump is created needs to exist"
+        echo "in the current tree."
+        echo ""
+    fi
+    echo "usage: git undump [-h] [--branch <ref>] --patch <ref>"
+    echo "                [--output-file [<filename>]]"
+    echo ""
+    echo "Options:"
+    echo "    -h                 show help and exit"
+    echo "    -b, --branch       branch name used for import, read from dump"
+    echo "                       if not given"
+    echo "    -i, --input-file   file to read dump from, <stdin> if not given"
+}
+
+function CheckNotSet # (NAME, VALUE)
+{
+    NAME=$1
+    VALUE=$2
+    if [[ "$VALUE" != "" ]]
+    then
+        error "$NAME has already been set"
+    fi
+}
+
+function CheckSet # (NAME, VALUE)
+{
+    NAME=$1
+    VALUE=$2
+    if [[ "$VALUE" == "" ]]
+    then
+        error "$NAME has not been set"
+    fi
+}
+
+function UrlEncode() {
+    old_lc_collate=$LC_COLLATE
+    LC_COLLATE=C
+
+    local length="${#1}"
+    for (( i = 0; i < length; i++ )); do
+        local c="${1:i:1}"
+        case $c in
+            [a-zA-Z0-9.~_-]) printf "$c" ;;
+            *) printf '%%%02X' "'$c" ;;
+        esac
+    done
+
+    LC_COLLATE=$old_lc_collate
+}
+
+FILENAME=""
+BRANCH=""
+
+while (( "$#" )); do
+    case "$1" in
+        -h)
+            help
+            exit 0
+            ;;
+        -i|--input-file)
+            CheckNotSet "file name" $FILENAME;
+            case "$2" in
+                -*|--|"")
+                    FILENAME="#"
+                    shift;
+                    ;;
+                *) FILENAME=$2
+                   shift 2
+                   ;;
+            esac;
+            ;;
+        -b|--branch-name)
+            CheckNotSet "branch name" $BRANCH;
+            case "$2" in
+                -*|--|"")
+                    error "malformed branch name '$2'"
+                    ;;
+                *) BRANCH=$2
+                   shift 2
+                   ;;
+            esac;
+            ;;
+        *)
+            error "unknown switch '$1'"
+            ;;
+    esac
+done
+
+if [[ $FILENAME == "#" || $FILENAME == "" ]]
+then
+    DATA=$(cat)
+else
+    FILENAME=$(UrlEncode $FILENAME)
+    DATA=$(cat "$FILENAME")
+fi
+
+if [[ "$BRANCH" == "" ]]
+then
+    BRANCH=$(printf %s "$DATA" | head -n 1)
+fi
+
+REV=$(printf %s "$DATA" | tail -n +2 | head -n 1)
+
+CURRENT=$(git rev-parse --abbrev-ref HEAD)
+
+REASON=$(git checkout -b "$BRANCH" "$REV" |  2>&1)
+if [[ $? != 0 ]]
+then
+    echo "$REASON"
+    exit $?
+fi
+
+REASON=$(printf %s "$DATA" | tail -n +3 | git am | 2>&1)
+
+if [[ $? != 0 ]]
+then
+    echo "$REASON"
+    exit $?
+fi
+
+REASON=$(git checkout "$CURRENT" |  2>&1)
+
+if [[ $? != 0 ]]
+then
+    echo "$REASON"
+    exit $?
+fi
+
+echo "Patch successfully un-dumped"
+exit 0
