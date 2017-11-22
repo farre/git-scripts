@@ -1,0 +1,124 @@
+#!/bin/bash
+
+GITARGS="--list"
+
+function error {
+    echo "error: $1"
+    help "error"
+    exit 1
+}
+
+function help {
+    if [[ "$1" == "" ]]
+    then
+        echo "Script for querying Bugzilla to decorate branches with bug status."
+        echo "For the branch names that match (bug/)?([1-9]+)(/.+) it uses \\2"
+        echo "as id when looking up status, otherwise the entire branch name."
+        echo ""
+    fi
+    echo "usage: git bz [-h] [-r | -a] [--status <pattern>] [-verbose]"
+    echo "              [(--merged | --no-merged | --contains) [<commit>]]"
+    echo "              [<pattern>...]"
+    echo ""
+    echo "Options:"
+    echo "    -h                    show help and exit"
+    echo "    -r, --remotes         only consider remote branches"
+    echo "    -a, --all             consider both local and remote branches"
+    echo "    -s, --status          filter on Bugzilla status, regexes allowed"
+    echo "    -v, --verbose         show more information, twice for even more"
+    echo "    --merged <commit>     only consider merged branches"
+    echo "    --no-merged <commit>  only consider not merged branches"
+    echo "    --contains <commit>   only consider branches containing commit"
+}
+
+FILTER=".*"
+VERBOSITY=0
+
+while (( "$#" )); do
+    case "$1" in
+        -h)
+            help
+            exit 0
+            ;;
+        -a|--all|-r|--remotes|--merged=*|--no-merged=*|--contains=*)
+            GITARGS="$GITARGS $1"
+            shift;;
+        --merged|--no-merged|--contains)
+            case "$2" in
+                -*|--*)
+                    GITARGS="$GITARGS $1"
+                    shift
+                    ;;
+                *)
+                    GITARGS="$GITARGS $1 $2"
+                    shift 2
+                    ;;
+            esac
+            ;;
+        -s|--status)
+            case "$2" in
+                -*|--*)
+                    error "malformed status '$1'"
+                    ;;
+                *)
+                    FILTER=$2
+                    shift 2
+                    ;;
+            esac
+            ;;
+        -v|--verbose)
+            VERBOSITY=$(expr $VERBOSITY + 1)
+            shift
+            ;;
+        -vv)
+            VERBOSITY=$(expr $VERBOSITY + 2)
+            shift
+            ;;
+        -*|--*)
+            error "unknown switch '$1'"
+            ;;
+        *)
+          GITARGS="$GITARGS $1"
+          shift
+          ;;
+    esac
+done
+
+BRANCHES=$(eval "git branch $GITARGS" | grep bug | tr -d '*')
+
+while read -r BRANCH
+do
+    BUG=$(sed -E 's|^(bug/)?([0-9]+)(/.+)?$|\2|' <<< $BRANCH)
+    JSON=$(curl -s https://bugzilla.mozilla.org/rest/bug/$BUG?include_fields=summary,status)
+    URL="https://bugzilla.mozilla.org/show_bug.cgi?id=$BUG"
+    STATUS=$(jq -r '.bugs[0] | .status' <<< $JSON)
+
+    if [[ $STATUS == null ]]
+    then
+        # This is due to trying to access an unauthorized BUG
+        echo "  $BRANCH - UNAUTHORIZED"
+        continue
+    fi
+
+    if [[ ! $STATUS =~ $FILTER ]]
+    then
+        continue
+    fi
+
+    RESULT="$BRANCH - $STATUS"
+
+    if [ $VERBOSITY -gt 0 ]
+    then
+        DATA=$(echo $JSON | jq -r '.bugs[0] | .summary')
+        RESULT="$RESULT - $DATA"
+    fi
+
+    if [ $VERBOSITY -gt 1 ]
+    then
+        RESULT="$RESULT - $URL"
+    fi
+
+    echo "  $RESULT"
+done <<< $BRANCHES
+
+exit 0
